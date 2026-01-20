@@ -190,6 +190,18 @@ parse_value :: (to_parse: string, slot: *u8, info: *Type_Info, ignore_unknown: b
             value_info = info_enum.internal_type;
         }
 
+		is_generic := is_generic_json_value(value_info);
+
+		if !is_generic && value_info.type != expected_type {
+			teaser := to_parse;
+			if teaser.count > 50	teaser.count = 50;
+            builder: String_Builder;
+            print_type_to_builder(*builder, info);
+            type_name := builder_to_string(*builder,, temp);
+			log_error("Cannot parse % value into type \"%\". Remaining input is: %…", expected_type, type_name, teaser);
+			return null, false, false, value_info, false;
+		}
+
         // @Incomplete: Add support for Tables of Any Types.
         // Currently all the `Type_Info` handling is happening at
         // Runtime. But supporting Tables of Values that differ in
@@ -217,18 +229,6 @@ parse_value :: (to_parse: string, slot: *u8, info: *Type_Info, ignore_unknown: b
 		member_info := is_type_info_table_of_pointers(value_info);
 		if member_info {
 			return slot, true, false, member_info, true;
-		}
-
-		is_generic := is_generic_json_value(value_info);
-
-		if !is_generic && value_info.type != expected_type {
-			teaser := to_parse;
-			if teaser.count > 50	teaser.count = 50;
-            builder: String_Builder;
-            print_type_to_builder(*builder, info);
-            type_name := builder_to_string(*builder,, temp);
-			log_error("Cannot parse % value into type \"%\". Remaining input is: %…", expected_type, type_name, teaser);
-			return null, false, false, value_info, false;
 		}
 
 		if info.type == .POINTER {
