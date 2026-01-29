@@ -98,6 +98,7 @@ WHITESPACE_CHARS :: " \t\n\r";
 
 #load "generic.jai";
 #load "typed.jai";
+#load "handler.jai";
 
 json_append_escaped :: (builder: *String_Builder, str: string) {
 	remaining := str;

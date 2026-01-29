@@ -177,8 +177,37 @@ parse_value :: (to_parse: string, slot: *u8, info: *Type_Info, ignore_unknown: b
 	remainder := trim_left(to_parse, WHITESPACE_CHARS);
     if !remainder return "", false;
 	success := true;
-
-	prepare_slot :: (expected_type: Type_Info_Tag, info: *Type_Info, slot: *u8, to_parse: string) -> *u8, success: bool, is_generic: bool, info: *Type_Info {
+	
+	prepare_slot :: (expected_type: Type_Info_Tag, info: *Type_Info, slot: *u8, to_parse: string) -> *u8, success: bool, is_generic: bool, info: *Type_Info, handler: JSON_Type_Handler {
+		log_type_mismatch_error :: () #expand {
+    		teaser := to_parse;
+    		if teaser.count > 50	teaser.count = 50;
+            builder: String_Builder;
+            print_type_to_builder(*builder, info);
+            type_name := builder_to_string(*builder,, temp);
+			log_error("Cannot parse % value into type \"%\". Remaining input is: %…", expected_type, type_name, teaser);
+	    }
+	    
+        handler := get_handler_for_type(info);
+        if is_valid(handler) {
+            // To prevent extra complications with other primitive types, handlers are only permitted for JSON objects, arrays, and strings.
+            if expected_type == {
+              case .STRING;
+              case .STRUCT;
+              case .ARRAY;
+              case;
+                // TODO: better error message specific to handler case..?
+                log_type_mismatch_error();
+            }
+            
+            success, value_info, value_slot := handler.prepare_slot(*handler, expected_type, info, slot);
+            if !success {
+                log_type_mismatch_error();
+                return null, false, false, value_info, .{};
+            }
+            return value_slot, true, false, value_info, handler;
+        }
+	    
 		value_info := info;
 		if info.type == .POINTER {
 			pointer_info := cast(*Type_Info_Pointer) info;
@@ -193,13 +222,8 @@ parse_value :: (to_parse: string, slot: *u8, info: *Type_Info, ignore_unknown: b
 		is_generic := is_generic_json_value(value_info);
 
 		if !is_generic && value_info.type != expected_type {
-			teaser := to_parse;
-			if teaser.count > 50	teaser.count = 50;
-            builder: String_Builder;
-            print_type_to_builder(*builder, info);
-            type_name := builder_to_string(*builder,, temp);
-			log_error("Cannot parse % value into type \"%\". Remaining input is: %…", expected_type, type_name, teaser);
-			return null, false, false, value_info;
+		    log_type_mismatch_error();
+			return null, false, false, value_info, .{};
 		}
 
 		if info.type == .POINTER {
@@ -215,9 +239,12 @@ parse_value :: (to_parse: string, slot: *u8, info: *Type_Info, ignore_unknown: b
 				memset(value_slot, 0, value_info.runtime_size);
 			}
 			(.*)cast(**u8)slot = value_slot;
-			return value_slot, true, is_generic, value_info;
+			
+			// needs to be called recursively in case we have a pointer to some type that requires a handler.
+			value_slot, success:, is_generic, value_info, handler = prepare_slot(expected_type, value_info, value_slot, to_parse);
+			return value_slot, success, is_generic, value_info, handler;
 		} else {
-			return slot, true, is_generic, value_info;
+			return slot, true, is_generic, value_info, .{};
 		}
 	}
 
@@ -308,27 +335,36 @@ parse_value :: (to_parse: string, slot: *u8, info: *Type_Info, ignore_unknown: b
 					            log_error("Found unsupported string value \"%\" for field \"%\" of type %.", value, field_name, type_name);
                         }
                     } else {
-                        value_slot: *u8;
-                        value_slot, success, is_generic = prepare_slot(.STRING, info, slot, to_parse);
+            			value_slot:  *u8;
+            			value_info:  *Type_Info;
+            			handler:     JSON_Type_Handler;
+            			defer deinit(*handler);
+                        value_slot, success, is_generic, value_info, handler = prepare_slot(.STRING, info, slot, to_parse);
                         if success {
-                            if is_generic {
+            				if is_valid(handler) {
+            			        success = handler.set_value_from_string(*handler, value_info, value_slot, value);
+            			    } else if is_generic {
                                 json_set(cast(*JSON_Value)value_slot, value);
                             } else {
                                 (.*)cast(*string)value_slot = value;
                             }
-                            stored = true;
+                            stored = success;
                         }
                     }
 				}
 			}
 		case #char "[";
-			value_slot: *u8;
-			value_info: *Type_Info;
+			value_slot:  *u8;
+			value_info:  *Type_Info;
+			handler:     JSON_Type_Handler;
+			defer deinit(*handler);
 			if slot {
-				value_slot, success, is_generic, value_info = prepare_slot(.ARRAY, info, slot, to_parse);
+				value_slot, success, is_generic, value_info, handler = prepare_slot(.ARRAY, info, slot, to_parse);
 			}
 			if success {
-				if is_generic {
+				if is_valid(handler) {
+			        remainder, success = parse_array_with_handler(*handler, remainder, value_slot, value_info, ignore_unknown, rename=rename, float_handling=float_handling);
+			    } else if is_generic {
 					value: [] JSON_Value;
 					value, remainder, success = parse_array(remainder);
 					json_set(cast(*JSON_Value)value_slot, value);
@@ -337,13 +373,17 @@ parse_value :: (to_parse: string, slot: *u8, info: *Type_Info, ignore_unknown: b
 				}
 			}
 		case #char "{";
-			value_slot: *u8;
-			value_info: *Type_Info;
+			value_slot:  *u8;
+			value_info:  *Type_Info;
+			handler:     JSON_Type_Handler;
+			defer deinit(*handler);
 			if slot {
-				value_slot, success, is_generic, value_info = prepare_slot(.STRUCT, info, slot, to_parse);
+				value_slot, success, is_generic, value_info, handler = prepare_slot(.STRUCT, info, slot, to_parse);
 			}
 			if success {
-				if is_generic {
+			    if is_valid(handler) {
+			        remainder, success = parse_object_with_handler(*handler, remainder, value_slot, value_info, ignore_unknown, rename=rename, float_handling=float_handling);
+			    } else if is_generic {
 					value := New(JSON_Object);
 					value.*, remainder, success = parse_object(remainder);
 					json_set(cast(*JSON_Value)value_slot, value);
@@ -460,6 +500,44 @@ parse_enum_string :: (str: string, slot: *u8, info_enum: *Type_Info_Enum) -> rem
     }
 
     return remainder, success;
+}
+
+parse_array_with_handler :: (handler: *JSON_Type_Handler, str: string, slot: *u8, info: *Type_Info, ignore_unknown: bool, rename: Rename_Proc, float_handling: Special_Float_Handling) -> remainder: string, success: bool {
+    assert(str[0] == #char "{", "Invalid object start %", str);
+    remainder := advance(str);
+    remainder = trim_left(remainder, WHITESPACE_CHARS);
+    if !remainder return "", false;
+    
+    if remainder[0] == #char "}" {
+        remainder = advance(remainder);
+        return remainder, true;
+    }
+    
+    index := 0;
+    while true {
+        defer index +=1;
+        
+        if !remainder || remainder[0] != #char "\""	return remainder, false;
+        
+        success, member_info, member_slot := handler.get_member_slot(handler, info, slot, "", index);
+        if !success  return remainder, false;
+        
+        remainder = trim_left(remainder, WHITESPACE_CHARS);
+        if !remainder || remainder[0] != #char ":"	return remainder, false;
+        remainder = advance(remainder);
+        
+        remainder, success = parse_value(remainder, member_slot, member_info, ignore_unknown, "", rename, float_handling=float_handling);
+        if !success  return remainder, false;
+        
+        remainder = trim_left(remainder, WHITESPACE_CHARS);
+        if !remainder || remainder[0] != #char ","	break;
+        remainder = advance(remainder);
+        remainder = trim_left(remainder, WHITESPACE_CHARS);
+    }
+    
+    if !remainder || remainder[0] != #char "}"	return remainder, false;
+    remainder = advance(remainder);
+    return remainder, true;
 }
 
 parse_array :: (str: string, slot: *u8, info: *Type_Info_Array, ignore_unknown: bool, rename: Rename_Proc, float_handling: Special_Float_Handling) -> remainder: string, success: bool {
@@ -599,6 +677,45 @@ fill_member_table :: (table: *Table(string, Member_Offset), info: *Type_Info_Str
     }
 }
 
+parse_object_with_handler :: (handler: *JSON_Type_Handler, str: string, slot: *u8, info: *Type_Info, ignore_unknown: bool, rename: Rename_Proc, float_handling: Special_Float_Handling) -> remainder: string, success: bool {
+    assert(str[0] == #char "{", "Invalid object start %", str);
+    remainder := advance(str);
+    remainder = trim_left(remainder, WHITESPACE_CHARS);
+    if !remainder return "", false;
+    
+    if remainder[0] == #char "}" {
+        remainder = advance(remainder);
+        return remainder, true;
+    }
+    
+    index := 0;
+    while true {
+        defer index +=1;
+        
+        if !remainder || remainder[0] != #char "\""	return remainder, false;
+        
+        key, remainder=, success := parse_string(remainder,, temp);
+        if !success		return remainder, false;
+        
+        success=, member_info, member_slot := handler.get_member_slot(handler, info, slot, key, index);
+        
+        remainder = trim_left(remainder, WHITESPACE_CHARS);
+        if !remainder || remainder[0] != #char ":"	return remainder, false;
+        remainder = advance(remainder);
+        
+        remainder, success = parse_value(remainder, member_slot, member_info, ignore_unknown, key, rename, float_handling=float_handling);
+        if !success		return remainder, false;
+        
+        remainder = trim_left(remainder, WHITESPACE_CHARS);
+        if !remainder || remainder[0] != #char ","	break;
+        remainder = advance(remainder);
+        remainder = trim_left(remainder, WHITESPACE_CHARS);
+    }
+    
+    if !remainder || remainder[0] != #char "}"	return remainder, false;
+    remainder = advance(remainder);
+    return remainder, true;
+}
 
 parse_object :: (str: string, slot: *u8, info: *Type_Info_Struct, ignore_unknown: bool, rename: Rename_Proc, float_handling: Special_Float_Handling) -> remainder: string, success: bool {
 	assert(str[0] == #char "{", "Invalid object start %", str);
