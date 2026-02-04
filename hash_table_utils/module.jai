@@ -7,11 +7,23 @@
     
     I have removed most of the comments on the code which was copied from Hash_Table.jai and have only included my own comments which are relevant to the changes made here.
     
-    IMPORTANT NOTE:
-    If there is no given_compare_function for the table, memcmp is used instead of operator == 
+    IMPORTANT NOTES:
+    
+        If there is no given_compare_function for the table, memcmp is used instead of operator == 
         This should not matter for primitive types, but if you are using #poke_name to insert operator == for other types, 
         then compare_keys will not do what you want it to do!
         Since #poke_name is going away anyhow, I see no reason to fix this. Just pass a given_compare_function.
+        
+        Hash.HASH_INIT is duplicated here because it is #scope_file in the Hash module for some reason.
+        This means that if HASH_INIT is ever changed, it might silently break any code using this module!
+        
+        Because we have to replicate all of the hash table procedures here with non-polymorphic versions,
+        it is possible that changes to the base Hash_Table module could break compatibility with this module.
+        I will try to keep this module up-to-date and push patches as soon as possible if and when this occurs,
+        but I think it is also important for you as the user to be aware of this. 
+        Then at least, if you read the language changelog and see changes to the Hash_Table module,
+        you will know to be on the lookout for strange memory bugs in code that uses hash tables!
+        
 */
 
 // This struct lines up with any Table, allowing us to access the values of the backing table through the Any_Table.
